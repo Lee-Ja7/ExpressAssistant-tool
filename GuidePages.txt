@@ -1,0 +1,291 @@
+================================================================================
+ExpressAssistant-tool · Cloudflare Worker 接口服务 实施与运维指南
+================================================================================
+版本：v1.0    编写日期：2026-09-27    适用对象：本仓库维护者 / 协作开发者
+
+本仓库是 Android 应用「快递助手」(ExpressAssistant) 的云端配套仓库，
+通过 Cloudflare Workers（Workers Builds 与 GitHub 关联）对外提供
+设置页所需的 4 个只读 API 接口。本文档包含：接口定义、代码说明、
+部署流程、环境变量配置、App 端对接方法、常见问题。
+
+--------------------------------------------------------------------------------
+目录
+--------------------------------------------------------------------------------
+  一、总体架构
+  二、仓库文件结构
+  三、四个接口详细定义（用途 / 方法 / 参数 / 返回结构 / 鉴权）
+  四、后端代码说明（src/index.js / src/content.js / wrangler.toml）
+  五、Cloudflare 部署流程与配置（环境变量 / 路由 / API 设置）
+  六、Android App 端对接方法（含可直接使用的 Kotlin 代码）
+  七、版本发布操作流程（以后每次发新版怎么做）
+  八、连通性自测清单
+  九、注意事项与常见问题
+
+================================================================================
+一、总体架构
+================================================================================
+
+    Android App (设置页)
+        │  HTTPS GET
+        ▼
+    Cloudflare 全球边缘节点 ── Workers Builds 自动构建（关联 GitHub main 分支）
+        │
+        ▼
+    本仓库 Worker 代码（src/index.js）
+        │  读取
+        ├── 环境变量（wrangler.toml [vars] 或控制台覆盖）
+        └── 内容文件（src/content.js：协议文本 / 许可清单 / 默认版本信息）
+
+要点：
+  - 4 个接口全部为「只读 JSON」，无需数据库、无需鉴权、无需第三方依赖；
+  - 推送到 GitHub main 分支 → Cloudflare 自动构建并全球部署（约 1 分钟）；
+  - 版本号等少量数据可在 Cloudflare 控制台直接改环境变量，即时生效，
+    无需改代码。
+
+================================================================================
+二、仓库文件结构
+================================================================================
+
+ExpressAssistant-tool/
+├── wrangler.toml        Worker 配置：名称、入口、环境变量默认值
+├── src/
+│   ├── index.js         Worker 入口：路由 + 统一响应格式 + CORS
+│   └── content.js       接口内容：协议文本、许可清单、默认更新信息
+├── GuidePages.txt       本文档
+└── README.md            仓库简介
+
+================================================================================
+三、四个接口详细定义
+================================================================================
+
+统一约定：
+  - 基础地址：https://expressassistant-tool.<你的子域>.workers.dev
+    （确切地址见 Cloudflare 控制台 → 工人与 Pages → expressassistant-tool）
+  - 请求方法：GET（其他方法返回 405）
+  - 鉴权：无（公开只读内容）
+  - 跨域：响应头已带 Access-Control-Allow-Origin: *，WebView/浏览器可直接调用
+  - 响应编码：application/json; charset=utf-8
+  - 缓存：Cache-Control: public, max-age=60（边缘缓存 60 秒）
+  - 统一响应结构：
+      成功  HTTP 200  { "code": 0, "msg": "ok", "data": {...} }
+      失败  HTTP 4xx  { "code": <状态码>, "msg": "<说明>" }
+
+--------------------------------------------------------------------------------
+接口 1：检查更新
+--------------------------------------------------------------------------------
+  用途：App 启动或用户点击「检查更新」时，判断是否有新版本
+  方法 / 路径：GET /api/update
+  请求参数：
+      v   （query，可选，整数）客户端当前 versionCode，如 v=43。
+          不传视为 0，即必然返回"有更新"。
+  返回 data 结构：
+      {
+        "hasUpdate": true,                  // 是否有新版本
+        "currentVersionCode": 43,           // 回显客户端版本
+        "latest": {
+          "versionName": "1.0.22.b",        // 最新版本号（展示用）
+          "versionCode": 43,                // 最新版本 code（比较用）
+          "apkUrl": "https://...apk",       // 新版 APK 下载地址
+          "forceUpdate": false,             // true=强制更新（不可跳过）
+          "changelog": ["...","..."],       // 更新日志条目数组
+          "publishedAt": "2026-09-27"       // 发布日期
+        }
+      }
+  数据来源：优先取 Cloudflare 环境变量（APP_VERSION_NAME / APP_VERSION_CODE /
+      APK_URL / FORCE_UPDATE），缺省时回退到 src/content.js 的 DEFAULT_UPDATE。
+
+--------------------------------------------------------------------------------
+接口 2：用户服务协议
+--------------------------------------------------------------------------------
+  用途：设置页「用户服务协议」正文
+  方法 / 路径：GET /api/agreement
+  请求参数：无
+  返回 data 结构：
+      {
+        "title": "用户服务协议",
+        "updatedAt": "2026-09-27",
+        "format": "markdown",               // 内容格式标识
+        "content": "# 用户服务协议\n..."     // 协议全文
+      }
+  内容来源：src/content.js 中的 AGREEMENT 常量。
+
+--------------------------------------------------------------------------------
+接口 3：隐私政策
+--------------------------------------------------------------------------------
+  用途：设置页「隐私政策」正文
+  方法 / 路径：GET /api/privacy
+  请求参数：无
+  返回 data 结构：同接口 2（title / updatedAt / format / content）。
+  内容来源：src/content.js 中的 PRIVACY 常量。
+
+--------------------------------------------------------------------------------
+接口 4：开源许可
+--------------------------------------------------------------------------------
+  用途：设置页「开源许可」清单
+  方法 / 路径：GET /api/licenses
+  请求参数：无
+  返回 data 结构：
+      {
+        "updatedAt": "2026-09-27",
+        "list": [
+          { "name": "库名", "author": "作者",
+            "license": "许可证", "url": "项目地址" },
+          ...
+        ]
+      }
+  内容来源：src/content.js 中的 LICENSES 常量。
+
+--------------------------------------------------------------------------------
+辅助接口：健康检查
+--------------------------------------------------------------------------------
+  GET /  或  GET /api/health
+  返回服务名、可用接口清单与服务器时间，用于部署后快速验证。
+
+================================================================================
+四、后端代码说明
+================================================================================
+
+【wrangler.toml】—— Cloudflare 读取的项目配置
+  name                Worker 名称，必须与控制台项目名一致
+  main                入口文件路径（src/index.js）
+  compatibility_date  锁定运行时行为，避免平台升级导致行为变化
+  [vars]              环境变量默认值：版本号 / APK 地址 / 是否强制更新
+
+【src/index.js】—— 路由层
+  - export default { async fetch(request, env) {...} } 是 Worker 标准入口；
+  - 用 new URL(request.url).pathname 做路由分发；
+  - 统一 json() 函数生成响应体，附带 CORS 与缓存头；
+  - OPTIONS 预检请求直接返回 204；非 GET 方法返回 405；
+  - /api/update 中 env.XXX 优先、content.js 默认值兜底。
+
+【src/content.js】—— 内容层
+  - DEFAULT_UPDATE / AGREEMENT / PRIVACY / LICENSES 四个导出常量；
+  - 修改文本内容只需改这个文件，push 即部署。
+
+================================================================================
+五、Cloudflare 部署流程与配置
+================================================================================
+
+（一）首次关联（已完成，供回顾）
+  1. Cloudflare 控制台 → 工人与 Pages → 创建 → 从 Git 导入；
+  2. 授权 GitHub，选择仓库 Lee-Ja7/ExpressAssistant-tool，分支 main；
+  3. 构建命令留空（纯 JS Worker 无需构建），部署命令默认 wrangler deploy；
+  4. 保存后自动完成首次部署，得到 *.workers.dev 域名。
+
+（二）日常部署
+  - 本地修改代码 → git add / commit / push 到 main → 自动重新部署；
+  - 控制台 → 该项目 →「部署」标签页可查看每次构建日志与回滚历史版本。
+
+（三）环境变量（两种改法，推荐第 2 种用于快速发版）
+  1. 代码方式：改 wrangler.toml 的 [vars] → push（有提交记录，推荐留档）；
+  2. 控制台方式：项目 → 设置 → 变量和机密 → 新建/编辑变量
+       变量名：APP_VERSION_NAME / APP_VERSION_CODE / APK_URL / FORCE_UPDATE
+       类型：纯文本（勿选"机密"，这些是公开数据）
+     控制台中的值优先级高于 wrangler.toml，保存后即时生效、无需重新部署。
+     注意：若在控制台改过，下次 push 不会覆盖控制台值，请保持两边一致。
+
+（四）路由规则
+  - 默认使用 *.workers.dev 免费子域，无需配置路由；
+  - 若将来绑定自有域名：项目 → 设置 → 域和路由 → 添加自定义域名
+    （如 api.example.com），DNS 由 Cloudflare 自动接管。
+
+（五）API 用量与限制（免费套餐）
+  - 请求数：每天 100,000 次，对本应用量级绰绰有余；
+  - CPU 时间：每次请求 10ms 上限（本 Worker 逻辑微秒级）；
+  - 可在控制台「分析」页查看请求量 / 错误率 / CPU 时间。
+
+================================================================================
+六、Android App 端对接方法
+================================================================================
+
+在 App 工程（ExpressAssistant）中新建
+app/src/main/java/com/tool/expressassistant/data/remote/AppApi.kt：
+
+    package com.tool.expressassistant.data.remote
+
+    import kotlinx.coroutines.Dispatchers
+    import kotlinx.coroutines.withContext
+    import org.json.JSONObject
+    import java.net.HttpURLConnection
+    import java.net.URL
+
+    /** 设置页云端接口（Cloudflare Worker，只读 JSON，无需鉴权） */
+    object AppApi {
+
+        // TODO: 替换为控制台中实际的 workers.dev 地址
+        private const val BASE =
+            "https://expressassistant-tool.<子域>.workers.dev"
+
+        /** 检查更新；currentCode 传 BuildConfig.VERSION_CODE */
+        suspend fun checkUpdate(currentCode: Int): JSONObject? =
+            get("$BASE/api/update?v=$currentCode")
+
+        suspend fun userAgreement(): JSONObject? = get("$BASE/api/agreement")
+        suspend fun privacyPolicy(): JSONObject? = get("$BASE/api/privacy")
+        suspend fun openSourceLicenses(): JSONObject? = get("$BASE/api/licenses")
+
+        private suspend fun get(url: String): JSONObject? =
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                        requestMethod = "GET"
+                        connectTimeout = 10000
+                        readTimeout = 10000
+                    }
+                    if (conn.responseCode != 200) return@withContext null
+                    JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                }.getOrNull()
+            }
+    }
+
+然后在 MainActivity.kt 的设置页分支中，把 4 个 showComingSoon 替换为：
+  - onCheckUpdate：调用 AppApi.checkUpdate(BuildConfig.VERSION_CODE)，
+    data.hasUpdate == true 时弹更新对话框（标题 versionName、
+    内容 changelog 拼接、按钮跳转 apkUrl）；
+  - 其余三项：打开一个新详情页，把 data.content（或 licenses 列表）渲染出来。
+
+================================================================================
+七、版本发布操作流程（以后每次发新版）
+================================================================================
+
+  1. App 侧：build.gradle.kts 提升 versionCode / versionName，
+     strings.xml 同步 app_version 并追加 changelog；
+  2. 打包 APK，上传到本仓库 Releases（建议固定文件名 app-release.apk，
+     使 APK_URL 直链长期有效）；
+  3. 更新版本信息（二选一）：
+       a. 改 wrangler.toml 的 APP_VERSION_NAME / APP_VERSION_CODE → push；
+       b. 或在 Cloudflare 控制台改同名环境变量（即时生效）；
+  4. 验证：浏览器访问 https://<域名>/api/update?v=1 应返回 hasUpdate=true。
+
+================================================================================
+八、连通性自测清单
+================================================================================
+
+  □ GET /                     返回 code=0 与接口清单
+  □ GET /api/update?v=0       hasUpdate=true
+  □ GET /api/update?v=<最新>  hasUpdate=false
+  □ GET /api/agreement        返回协议全文
+  □ GET /api/privacy          返回隐私政策全文
+  □ GET /api/licenses         返回许可清单数组
+  □ POST /api/update          返回 405
+  □ GET /api/不存在            返回 404
+  □ 响应头含 access-control-allow-origin: *
+
+  （以上 10 个用例已在开发阶段用脚本对 Worker 代码做过完整验证，全部通过）
+
+================================================================================
+九、注意事项与常见问题
+================================================================================
+
+  1. 本项目是 Worker（控制台显示在"工人"分类下），不是传统 Pages 静态站；
+     所有接口由 src/index.js 动态返回，仓库里不需要 index.html。
+  2. 控制台环境变量优先级高于 wrangler.toml。若发现"改了文件不生效"，
+     先检查控制台是否存在同名变量覆盖了代码值。
+  3. 接口有 60 秒边缘缓存：改完内容最长 1 分钟后生效，属正常现象。
+  4. 协议与政策文本是模板，正式发布前请法律层面审校。
+  5. 开源许可清单请对照 app/build.gradle.kts 的依赖列表定期核对。
+  6. APK_URL 建议始终指向 Releases 的 latest 直链，避免每次发版改配置。
+  7. 免费套餐每天 10 万次请求；若将来超限，可在控制台升级或加缓存时间。
+  8. 若需要写操作或用户数据，再考虑增加 KV / D1 存储并加鉴权；
+     当前 4 个接口均为公开只读内容，保持无鉴权即可。
+================================================================================

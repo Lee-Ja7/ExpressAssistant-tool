@@ -1,0 +1,35 @@
+# ============================================================
+# ExpressAssistant-tool · Cloudflare Worker 配置文件
+# 用途：为 Android App「快递助手」的设置页提供 4 个云端接口
+#   1) GET /api/update    检查更新
+#   2) GET /api/agreement 用户服务协议
+#   3) GET /api/privacy   隐私政策
+#   4) GET /api/licenses  开源许可
+# 部署：本仓库已通过 Workers Builds 与 Cloudflare 关联，
+#       推送到 main 分支即自动构建部署，无需手动操作。
+# ============================================================
+
+# Worker 名称（必须与 Cloudflare 控制台中的项目名一致）
+name = "expressassistant-tool"
+
+# Worker 入口文件
+main = "src/index.js"
+
+# 兼容日期：锁定 Workers 运行时行为，取首次部署当天即可
+compatibility_date = "2026-09-26"
+
+# ------------------------------------------------------------
+# [vars] 环境变量（纯文本，会随代码一起部署）
+# 作用：发新版 App 时，只需改这里的版本信息（或在 Cloudflare
+# 控制台 → Workers → 该项目 → 设置 → 变量和机密 中修改，
+# 控制台修改后即时生效、优先级高于此处，无需重新部署）。
+# ------------------------------------------------------------
+[vars]
+# 最新版本号（与 App 的 build.gradle.kts 中 versionName 保持一致）
+APP_VERSION_NAME = "1.0.22.b"
+# 最新版本 code（与 versionCode 保持一致，整数；App 用 ?v=当前code 比较大小）
+APP_VERSION_CODE = "43"
+# 新版 APK 下载地址（推荐上传到本仓库 Releases 后填直链）
+APK_URL = "https://github.com/Lee-Ja7/ExpressAssistant-tool/releases/latest/download/app-release.apk"
+# 是否强制更新："true" = App 弹窗不可跳过；"false" = 可跳过
+FORCE_UPDATE = "false"
